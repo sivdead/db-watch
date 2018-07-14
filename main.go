@@ -1,22 +1,24 @@
 package main
 
 import (
-	log "github.com/sirupsen/logrus"
+	"fmt"
+	"io"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-	"io"
+	"timeout-kill/config"
+	"timeout-kill/job"
+
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/go-xorm/core"
 	"github.com/go-xorm/xorm"
-	"github.com/robfig/cron"
-	"timeout-kill/job"
-	"fmt"
-	flag "github.com/spf13/pflag"
-	"io/ioutil"
 	"github.com/json-iterator/go"
-	"timeout-kill/config"
+	"github.com/robfig/cron"
+	log "github.com/sirupsen/logrus"
+	_log "log"
+	flag "github.com/spf13/pflag"
 )
 
 const (
@@ -41,32 +43,39 @@ func main() {
 
 	for _, c := range conf {
 
-		url := fmt.Sprintf(connectURL, c.Username, c.Password, c.Addr, "information_schema")
+		url := fmt.Sprintf(connectURL, c.Username, c.Password, c.Addr, c.Schema)
+		//fmt.Println(url)
 		engine, err := xorm.NewEngine("mysql", url)
 		if err != nil {
-			log.Errorf("error occurs while connecting to database %s: %s \n", c.Name, err.Error())
-			os.Exit(1)
+			log.Panicf("error occurs while connecting to database %s: %s \n", c.Name, err.Error())
 		}
 		defer engine.Close()
-		log.Infof("database %s connection establish success!", c.Name)
+		err = engine.Ping()
+		if err != nil {
+			log.Panicf("error occurs while ping database %s: %s", c.Name, err.Error())
+		}
+		log.Infof("database :%s, connection established!", c.Name)
 
 		//create logger file
 		{
 			f, err := os.OpenFile(c.Name+".db.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
-				log.Errorf("error occurs while creating database logger file: %s \n", err.Error())
+				log.Warnf("error occurs while creating database logger file: %s \n", err.Error())
 			}
 			defer f.Close()
 			engine.ShowSQL(true)
 			engine.ShowExecTime(true)
-			engine.SetLogger(xorm.NewSimpleLogger(f))
+			engine.SetLogger(xorm.NewSimpleLogger2(f, "["+c.Name+"]", _log.Ldate|_log.Ltime))
 			engine.Logger().SetLevel(core.LOG_DEBUG)
 		}
-
-		executor.AddJob(cronStr, job.Job{engine, &c})
+		if c.Cron == "" {
+			c.Cron = cronStr
+		}
+		executor.AddJob(c.Cron, &job.Job{Engine: engine, Config: c})
 	}
+	executor.Entries()
 	//create scheduler
-	executor.Run()
+	executor.Start()
 	log.Infof("starting timeout scheduler %s ", time.Now().Format("2006-01-02 15:04:05"))
 
 	//wait for quit command
@@ -102,7 +111,7 @@ func initParameters() {
 	configPath := flag.StringP("config-file", "c", "", "config file path")
 	flag.Parse()
 
-	if *h{
+	if *h {
 		flag.Usage()
 		os.Exit(0)
 	}
