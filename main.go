@@ -2,23 +2,24 @@ package main
 
 import (
 	"fmt"
-	"io"
+	"github.com/lestrrat/go-file-rotatelogs"
+	"github.com/rifflock/lfshook"
 	"io/ioutil"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-	"timeout-kill/config"
-	"timeout-kill/job"
+	"db-watch/config"
+	"db-watch/job"
 
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/go-xorm/core"
 	"github.com/go-xorm/xorm"
 	"github.com/json-iterator/go"
 	"github.com/robfig/cron"
 	log "github.com/sirupsen/logrus"
-	_log "log"
 	flag "github.com/spf13/pflag"
+	"path"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -35,7 +36,7 @@ var (
 )
 
 func init() {
-	initLogger()
+	configLocalFilesystemLogger("", "db-watch", 240*time.Hour, 4*time.Hour)
 	initParameters()
 }
 
@@ -49,7 +50,6 @@ func main() {
 		if err != nil {
 			log.Panicf("error occurs while connecting to database %s: %s \n", c.Name, err.Error())
 		}
-		defer engine.Close()
 		err = engine.Ping()
 		if err != nil {
 			log.Panicf("error occurs while ping database %s: %s", c.Name, err.Error())
@@ -58,15 +58,14 @@ func main() {
 
 		//create logger file
 		{
-			f, err := os.OpenFile(c.Name+".db.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+			/*f, err := os.OpenFile(c.Name+".db.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
 			if err != nil {
 				log.Warnf("error occurs while creating database logger file: %s \n", err.Error())
-			}
-			defer f.Close()
-			engine.ShowSQL(true)
-			engine.ShowExecTime(true)
-			engine.SetLogger(xorm.NewSimpleLogger2(f, "["+c.Name+"]", _log.Ldate|_log.Ltime))
-			engine.Logger().SetLevel(core.LOG_DEBUG)
+			}*/
+			//engine.ShowSQL(true)
+			//engine.ShowExecTime(true)
+			//engine.SetLogger(xorm.NewSimpleLogger2(f, "["+c.Name+"]", sysLog.Ldate|sysLog.Ltime))
+			//engine.Logger().SetLevel(core.LOG_DEBUG)
 		}
 		if c.Cron == "" {
 			c.Cron = cronStr
@@ -86,19 +85,27 @@ func main() {
 	defer log.Println("stop timeout scheduler")
 }
 
-func initLogger() {
-	now := time.Now().Format("2006-01-02")
-	f, err := os.OpenFile(now+".log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+// config logrus log to local filesystem, with file rotation
+func configLocalFilesystemLogger(logPath string, logFileName string, maxAge time.Duration, rotationTime time.Duration) {
+	baseLogPaht := path.Join(logPath, logFileName)
+	writer, err := rotatelogs.New(
+		baseLogPaht+".%Y%m%d%H%M.log",
+		rotatelogs.WithLinkName(baseLogPaht),      // 生成软链，指向最新日志文件
+		rotatelogs.WithMaxAge(maxAge),             // 文件最大保存时间
+		rotatelogs.WithRotationTime(rotationTime), // 日志切割时间间隔
+	)
 	if err != nil {
-		fmt.Printf("error occuors while creating sys logger file:  %s\n", err.Error())
+		log.Errorf("config local file system logger error. %+v", errors.WithStack(err))
 	}
-	//defer f.Close()
-	writers := []io.Writer{
-		os.Stdout,
-		f,
-	}
-	log.SetFormatter(&log.JSONFormatter{})
-	log.SetOutput(io.MultiWriter(writers...))
+	lfHook := lfshook.NewHook(lfshook.WriterMap{
+		log.DebugLevel: writer, // 为不同级别设置不同的输出目的
+		log.InfoLevel:  writer,
+		log.WarnLevel:  writer,
+		log.ErrorLevel: writer,
+		log.FatalLevel: writer,
+		log.PanicLevel: writer,
+	}, &log.JSONFormatter{})
+	log.AddHook(lfHook)
 }
 
 func initParameters() {

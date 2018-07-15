@@ -2,9 +2,9 @@ package job
 
 import (
 	"github.com/go-xorm/xorm"
-	"timeout-kill/model"
+	"db-watch/model"
 	"github.com/lunny/log"
-	"timeout-kill/config"
+	"db-watch/config"
 	"strings"
 	"fmt"
 )
